@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+node_modules
+server/node_modules
+server
+dist
+server/dist
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+npm-debug.log
+README.Docker.md

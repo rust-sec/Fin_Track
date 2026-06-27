@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum CategoryType {
+  INCOME
+  EXPENSE
+  ASSET
+  LIABILITY
+}
+
+enum PositionKind {
+  ASSET
+  LIABILITY
+}
+
+model User {
+  id             String             @id @default(cuid())
+  email          String             @unique
+  passwordHash   String
+  name           String
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  memberships    FamilyMembership[]
+  transactions   Transaction[]      @relation("TransactionCreator")
+  valuations     PositionValuation[]
+}
+
+model Family {
+  id            String             @id @default(cuid())
+  name          String
+  baseCurrency  String             @default("INR")
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  memberships   FamilyMembership[]
+  categories    Category[]
+  transactions  Transaction[]
+  incomeSources IncomeSource[]
+  budgets       Budget[]
+  positions     FinancialPosition[]
+}
+
+model FamilyMembership {
+  id        String         @id @default(cuid())
+  familyId  String
+  userId    String
+  role      MembershipRole @default(MEMBER)
+  createdAt DateTime       @default(now())
+  family    Family         @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, userId])
+  @@index([userId])
+}
+
+model Category {
+  id        String       @id @default(cuid())
+  familyId  String?
+  type      CategoryType
+  name      String
+  isSystem  Boolean      @default(false)
+  createdAt DateTime     @default(now())
+  family    Family?      @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, type, name])
+  @@index([familyId, type])
+}
+
+model Transaction {
+  id              String          @id @default(cuid())
+  familyId        String
+  createdByUserId String
+  type            TransactionType
+  date            DateTime
+  amount          Decimal         @db.Decimal(14, 2)
+  currency        String          @default("INR")
+  category        String
+  description     String
+  accountName     String?
+  notes           String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  family          Family          @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  createdBy       User            @relation("TransactionCreator", fields: [createdByUserId], references: [id])
+
+  @@index([familyId, date])
+  @@index([familyId, type])
+}
+
+model IncomeSource {
+  id            String   @id @default(cuid())
+  familyId      String
+  name          String
+  monthlyAmount Decimal  @db.Decimal(14, 2)
+  currency      String   @default("INR")
+  startMonth    DateTime
+  endMonth      DateTime?
+  isActive      Boolean  @default(true)
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  family        Family   @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId, isActive])
+}
+
+model Budget {
+  id        String   @id @default(cuid())
+  familyId  String
+  month     DateTime
+  category  String
+  amount    Decimal  @db.Decimal(14, 2)
+  currency  String   @default("INR")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  family    Family   @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@unique([familyId, month, category])
+}
+
+model FinancialPosition {
+  id          String              @id @default(cuid())
+  familyId    String
+  kind        PositionKind
+  category    String
+  name        String
+  institution String?
+  owner       String?
+  notes       String?
+  currency    String              @default("INR")
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  family      Family              @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  valuations  PositionValuation[]
+
+  @@index([familyId, kind, isActive])
+}
+
+model PositionValuation {
+  id              String            @id @default(cuid())
+  positionId      String
+  createdByUserId String?
+  valuationDate   DateTime
+  value           Decimal           @db.Decimal(14, 2)
+  note            String?
+  createdAt       DateTime          @default(now())
+  position        FinancialPosition @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  createdBy       User?             @relation(fields: [createdByUserId], references: [id])
+
+  @@index([positionId, valuationDate])
+}
