@@ -71,6 +71,40 @@ export async function positionRoutes(app: FastifyInstance) {
     return reply.code(201).send(position);
   });
 
+  app.put("/families/:familyId/positions/:positionId", async (request, reply) => {
+    const user = getAuthUser(request);
+    const params = positionParams.parse(request.params);
+    const input = positionSchema.omit({ currentValue: true, valuationDate: true }).parse(request.body);
+    if (!(await requireFamilyMember(user.id, params.familyId))) {
+      return reply.code(403).send({ message: "No access to this family" });
+    }
+    const result = await prisma.financialPosition.updateMany({
+      where: { id: params.positionId, familyId: params.familyId },
+      data: {
+        kind: input.kind,
+        category: input.category,
+        name: input.name,
+        institution: input.institution,
+        owner: input.owner,
+        notes: input.notes,
+        currency: input.currency.toUpperCase(),
+      },
+    });
+    return result.count ? { ok: true } : reply.code(404).send({ message: "Position not found" });
+  });
+
+  app.delete("/families/:familyId/positions/:positionId", async (request, reply) => {
+    const user = getAuthUser(request);
+    const params = positionParams.parse(request.params);
+    if (!(await requireFamilyMember(user.id, params.familyId))) {
+      return reply.code(403).send({ message: "No access to this family" });
+    }
+    await prisma.financialPosition.deleteMany({
+      where: { id: params.positionId, familyId: params.familyId },
+    });
+    return { ok: true };
+  });
+
   app.post("/families/:familyId/positions/:positionId/valuations", async (request, reply) => {
     const user = getAuthUser(request);
     const params = positionParams.parse(request.params);

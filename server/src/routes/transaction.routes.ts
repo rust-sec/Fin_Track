@@ -5,6 +5,7 @@ import { prisma } from "../prisma.js";
 import { parseDate } from "../utils/dates.js";
 
 const familyParams = z.object({ familyId: z.string() });
+const transactionParams = z.object({ familyId: z.string(), transactionId: z.string() });
 
 const transactionSchema = z.object({
   type: z.enum(["INCOME", "EXPENSE"]),
@@ -71,5 +72,17 @@ export async function transactionRoutes(app: FastifyInstance) {
     });
 
     return reply.code(201).send(transaction);
+  });
+
+  app.delete("/families/:familyId/transactions/:transactionId", async (request, reply) => {
+    const user = getAuthUser(request);
+    const params = transactionParams.parse(request.params);
+    if (!(await requireFamilyMember(user.id, params.familyId))) {
+      return reply.code(403).send({ message: "No access to this family" });
+    }
+    await prisma.transaction.deleteMany({
+      where: { id: params.transactionId, familyId: params.familyId },
+    });
+    return { ok: true };
   });
 }

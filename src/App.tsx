@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { api, getStoredToken, type Session } from "./api";
 import { NetWorth } from "./NetWorth";
-import { loadFinanceData, saveFinanceData } from "./storage";
 import {
   EXPENSE_CATEGORIES,
   type Budget,
@@ -30,13 +30,51 @@ const navItems: Array<{ view: View; icon: string; label: string }> = [
   { view: "networth", icon: "◇", label: "Net worth" },
 ];
 
+const emptyData: FinanceData = {
+  transactions: [],
+  incomeSources: [],
+  budgets: [],
+  positions: [],
+};
+
 function App() {
-  const [data, setData] = useState<FinanceData>(loadFinanceData);
+  const [data, setData] = useState<FinanceData>(emptyData);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [view, setView] = useState<View>("dashboard");
   const [selectedMonth, setSelectedMonth] = useState(currentMonth);
   const [transactionModal, setTransactionModal] = useState(false);
 
-  useEffect(() => saveFinanceData(data), [data]);
+  const refreshData = async (familyId = session?.familyId) => {
+    if (!familyId) return;
+    setData(await api.loadFinanceData(familyId));
+  };
+
+  useEffect(() => {
+    const bootstrap = async () => {
+      const token = getStoredToken();
+      if (!token) {
+        setAuthChecked(true);
+        return;
+      }
+
+      try {
+        const current = await api.me();
+        const familyId = current.memberships[0]?.familyId;
+        if (!familyId) throw new Error("No family found for this account");
+        setSession({ accessToken: token, user: current.user, familyId });
+        setData(await api.loadFinanceData(familyId));
+      } catch {
+        await api.logout();
+      } finally {
+        setAuthChecked(true);
+      }
+    };
+
+    void bootstrap();
+  }, []);
 
   const summary = useMemo(
     () =>
@@ -49,20 +87,153 @@ function App() {
     [data, selectedMonth],
   );
 
-  const addTransaction = (transaction: Transaction) => {
-    setData((current) => ({
-      ...current,
-      transactions: [transaction, ...current.transactions],
-    }));
+  const addTransaction = async (transaction: Transaction) => {
+    if (!session) return;
+    setError("");
+    try {
+      await api.createTransaction(session.familyId, transaction);
+      await refreshData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save transaction");
+    }
   };
 
-  const deleteTransaction = (id: string) => {
+  const deleteTransaction = async (id: string) => {
+    if (!session) return;
     if (!window.confirm("Delete this transaction?")) return;
-    setData((current) => ({
-      ...current,
-      transactions: current.transactions.filter((item) => item.id !== id),
-    }));
+    setError("");
+    try {
+      await api.deleteTransaction(session.familyId, id);
+      await refreshData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete transaction");
+    }
   };
+
+  const syncIncomeSources = async (nextSources: IncomeSource[]) => {
+    if (!session) return;
+    setError("");
+    try {
+      const previous = data.incomeSources;
+      const removed = previous.filter((item) => !nextSources.some((next) => next.id === item.id));
+      const added = nextSources.filter((item) => !previous.some((old) => old.id === item.id));
+      const updated = nextSources.filter((item) => {
+        const old = previous.find((source) => source.id === item.id);
+        return old && JSON.stringify(old) !== JSON.stringify(item);
+      });
+
+      await Promise.all([
+        ...removed.map((source) => api.deleteIncomeSource(session.familyId, source.id)),
+        ...added.map((source) => api.createIncomeSource(session.familyId, source)),
+        ...updated.map((source) => api.updateIncomeSource(session.familyId, source)),
+      ]);
+      await refreshData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save income sources");
+    }
+  };
+
+  const syncBudgets = async (nextBudgets: Budget[]) => {
+    if (!session) return;
+    setError("");
+    try {
+      const categories = new Set([
+        ...data.budgets.filter((item) => item.month === selectedMonth).map((item) => item.category),
+        ...nextBudgets.filter((item) => item.month === selectedMonth).map((item) => item.category),
+      ]);
+
+      await Promise.all(
+        [...categories].map((category) => {
+          const nextAmount =
+            nextBudgets.find((item) => item.month === selectedMonth && item.category === category)
+              ?.amount ?? 0;
+          const previousAmount =
+            data.budgets.find((item) => item.month === selectedMonth && item.category === category)
+              ?.amount ?? 0;
+          if (nextAmount === previousAmount) return Promise.resolve();
+          return api.setBudget(session.familyId, {
+            id: "",
+            month: selectedMonth,
+            category,
+            amount: nextAmount,
+          });
+        }),
+      );
+      await refreshData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save budgets");
+    }
+  };
+
+  const syncPositions = async (nextPositions: FinanceData["positions"]) => {
+    if (!session) return;
+    setError("");
+    try {
+      const previous = data.positions;
+      const removed = previous.filter((item) => !nextPositions.some((next) => next.id === item.id));
+      const added = nextPositions.filter((item) => !previous.some((old) => old.id === item.id));
+      const updated = nextPositions.filter((item) => {
+        const old = previous.find((position) => position.id === item.id);
+        if (!old) return false;
+        const oldCore = { ...old, valuations: undefined };
+        const nextCore = { ...item, valuations: undefined };
+        return JSON.stringify(oldCore) !== JSON.stringify(nextCore);
+      });
+      const newValuations = nextPositions.flatMap((position) => {
+        const old = previous.find((item) => item.id === position.id);
+        if (!old) return [];
+        return position.valuations
+          .filter((valuation) => !old.valuations.some((item) => item.id === valuation.id))
+          .map((valuation) => ({ positionId: position.id, valuation }));
+      });
+
+      await Promise.all([
+        ...removed.map((position) => api.deletePosition(session.familyId, position.id)),
+        ...added.map((position) => api.createPosition(session.familyId, position)),
+        ...updated.map((position) => api.updatePosition(session.familyId, position)),
+        ...newValuations.map(({ positionId, valuation }) =>
+          api.addValuation(session.familyId, positionId, valuation),
+        ),
+      ]);
+      await refreshData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save financial positions");
+    }
+  };
+
+  if (!authChecked) {
+    return <FullPageMessage title="Loading" text="Checking your session..." />;
+  }
+
+  if (!session) {
+    return (
+      <AuthScreen
+        loading={loading}
+        error={error}
+        onSubmit={async (mode, input) => {
+          setLoading(true);
+          setError("");
+          try {
+            const nextSession =
+              mode === "login"
+                ? await api.login({ email: input.email, password: input.password })
+                : await api.register({
+                    name: input.name,
+                    email: input.email,
+                    password: input.password,
+                    familyName: input.familyName,
+                  });
+            setSession(nextSession);
+            setData(await api.loadFinanceData(nextSession.familyId));
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Authentication failed");
+          } finally {
+            setLoading(false);
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -89,8 +260,18 @@ function App() {
         </nav>
 
         <div className="sidebar-note">
-          <span>Private by default</span>
-          <p>Your data stays in this browser for the MVP.</p>
+          <span>{session.user.name}</span>
+          <p>Data is stored in your family database.</p>
+          <button
+            className="text-button"
+            onClick={async () => {
+              await api.logout();
+              setSession(null);
+              setData(emptyData);
+            }}
+          >
+            Sign out
+          </button>
         </div>
       </aside>
 
@@ -114,6 +295,7 @@ function App() {
         </header>
 
         <section className="content">
+          {error && <div className="error-banner">{error}</div>}
           {view === "dashboard" && (
             <Dashboard
               data={data}
@@ -134,9 +316,7 @@ function App() {
           {view === "income" && (
             <IncomeSetup
               sources={data.incomeSources}
-              onChange={(incomeSources) =>
-                setData((current) => ({ ...current, incomeSources }))
-              }
+              onChange={(incomeSources) => void syncIncomeSources(incomeSources)}
             />
           )}
           {view === "budgets" && (
@@ -144,17 +324,13 @@ function App() {
               budgets={data.budgets}
               transactions={data.transactions}
               month={selectedMonth}
-              onChange={(budgets) =>
-                setData((current) => ({ ...current, budgets }))
-              }
+              onChange={(budgets) => void syncBudgets(budgets)}
             />
           )}
           {view === "networth" && (
             <NetWorth
               positions={data.positions}
-              onChange={(positions) =>
-                setData((current) => ({ ...current, positions }))
-              }
+              onChange={(positions) => void syncPositions(positions)}
             />
           )}
         </section>
@@ -164,7 +340,7 @@ function App() {
         <TransactionModal
           onClose={() => setTransactionModal(false)}
           onSave={(transaction) => {
-            addTransaction(transaction);
+            void addTransaction(transaction);
             setTransactionModal(false);
           }}
         />
@@ -1022,3 +1198,121 @@ function EmptyState({
 }
 
 export default App;
+
+function FullPageMessage({ title, text }: { title: string; text: string }) {
+  return (
+    <div className="auth-page">
+      <div className="auth-card compact">
+        <span className="brand-mark">₹</span>
+        <h1>{title}</h1>
+        <p>{text}</p>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({
+  loading,
+  error,
+  onSubmit,
+}: {
+  loading: boolean;
+  error: string;
+  onSubmit: (
+    mode: "login" | "register",
+    input: { name: string; email: string; password: string; familyName: string },
+  ) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [name, setName] = useState("");
+  const [familyName, setFamilyName] = useState("My Family");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    void onSubmit(mode, { name, email, password, familyName });
+  };
+
+  return (
+    <div className="auth-page">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="brand auth-brand">
+          <span className="brand-mark">₹</span>
+          <div>
+            <strong>Family Finance</strong>
+            <span>Private family money tracking</span>
+          </div>
+        </div>
+
+        <div className="type-toggle">
+          <button
+            type="button"
+            className={mode === "login" ? "active income" : ""}
+            onClick={() => setMode("login")}
+          >
+            Sign in
+          </button>
+          <button
+            type="button"
+            className={mode === "register" ? "active income" : ""}
+            onClick={() => setMode("register")}
+          >
+            Create account
+          </button>
+        </div>
+
+        {mode === "register" && (
+          <>
+            <label className="form-field">
+              <span>Your name</span>
+              <input
+                required
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="e.g. Satya"
+              />
+            </label>
+            <label className="form-field">
+              <span>Family name</span>
+              <input
+                required
+                value={familyName}
+                onChange={(event) => setFamilyName(event.target.value)}
+                placeholder="e.g. Sharma Family"
+              />
+            </label>
+          </>
+        )}
+
+        <label className="form-field">
+          <span>Email</span>
+          <input
+            required
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@example.com"
+          />
+        </label>
+        <label className="form-field">
+          <span>Password</span>
+          <input
+            required
+            minLength={8}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="At least 8 characters"
+          />
+        </label>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <button className="primary-button auth-submit" disabled={loading}>
+          {loading ? "Please wait..." : mode === "login" ? "Sign in" : "Create account"}
+        </button>
+      </form>
+    </div>
+  );
+}

@@ -1517,3 +1517,59 @@ h2 {
     padding: 22px;
   }
 }
+
+.auth-page {
+  align-items: center;
+  background:
+    radial-gradient(circle at top left, rgba(16, 185, 129, 0.2), transparent 34%),
+    linear-gradient(135deg, #eefcf6 0%, #f8fafc 50%, #eef2ff 100%);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-card {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 18px;
+  max-width: 460px;
+  padding: 28px;
+  width: 100%;
+}
+
+.auth-card.compact {
+  justify-items: center;
+  text-align: center;
+}
+
+.auth-card.compact h1,
+.auth-card.compact p {
+  margin: 0;
+}
+
+.auth-card.compact p {
+  color: var(--muted);
+}
+
+.auth-brand {
+  margin-bottom: 4px;
+}
+
+.auth-submit {
+  justify-content: center;
+  width: 100%;
+}
+
+.error-banner {
+  background: #fff1f2;
+  border: 1px solid #fecdd3;
+  border-radius: 16px;
+  color: #be123c;
+  font-size: 0.92rem;
+  font-weight: 700;
+  padding: 12px 14px;
+}
